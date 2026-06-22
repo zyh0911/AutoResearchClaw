@@ -166,10 +166,11 @@ Derived from `goal.md` for topic: {config.research.topic}
 """
     (stage_dir / "problem_tree.md").write_text(body, encoding="utf-8")
 
-    # IMP-35: Topic/title quality pre-evaluation
-    # Quick LLM check: is the topic well-scoped for a conference paper?
+    # IMP-35: Topic/title quality pre-evaluation + auto-refinement
+    # If the topic is too broad (score < 6), generate specific sub-topics and pick the best.
     if llm is not None:
         try:
+            _domain_label = _detect_domain(config.research.topic, config.research.domains)[1]
             _eval_resp = llm.chat(
                 [
                     {
@@ -177,7 +178,7 @@ Derived from `goal.md` for topic: {config.research.topic}
                         "content": (
                             "Evaluate this research topic for a top ML conference paper. "
                             "Score 1-10 on: (a) novelty, (b) specificity, (c) feasibility. "
-                            "If overall score < 5, suggest a refined topic.\n\n"
+                            "If overall score < 6, suggest a refined topic.\n\n"
                             f"Topic: {config.research.topic}\n\n"
                             "Reply as JSON: {\"novelty\": N, \"specificity\": N, "
                             "\"feasibility\": N, \"overall\": N, \"suggestion\": \"...\"}"
@@ -185,19 +186,55 @@ Derived from `goal.md` for topic: {config.research.topic}
                     }
                 ],
                 system=(
-                    f"You are a senior {_detect_domain(config.research.topic, config.research.domains)[1]} "
+                    f"You are a senior {_domain_label} "
                     f"researcher evaluating research topic quality."
                 ),
             )
             _eval_data = _safe_json_loads(_eval_resp.content, {})
             if isinstance(_eval_data, dict):
                 overall = _eval_data.get("overall", 10)
-                if isinstance(overall, (int, float)) and overall < 5:
+                if isinstance(overall, (int, float)) and overall < 6:
+                    # Topic is too broad — treat it as a direction and generate specific candidates
                     logger.warning(
-                        "IMP-35: Topic quality score %s/10 — consider refining: %s",
+                        "IMP-35: Topic too broad (score %s/10). Generating specific sub-topics...",
                         overall,
-                        _eval_data.get("suggestion", ""),
                     )
+                    try:
+                        _refine_resp = llm.chat(
+                            [
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"The research direction '{config.research.topic}' is too broad "
+                                        "for a single conference paper. Generate 5 specific, publishable "
+                                        "research topics derived from this direction. Each must be concrete "
+                                        "enough for a single paper at a top ML/systems venue — specify the "
+                                        "mechanism, target system, and approach.\n\n"
+                                        "Reply as JSON: {\"candidates\": ["
+                                        "{\"topic\": \"...\", \"novelty\": N, \"specificity\": N, "
+                                        "\"feasibility\": N, \"overall\": N, \"rationale\": \"...\"}]}"
+                                    ),
+                                }
+                            ],
+                            system=(
+                                f"You are a senior {_domain_label} researcher helping scope a "
+                                "vague research direction into a publishable conference paper topic."
+                            ),
+                        )
+                        _refine_data = _safe_json_loads(_refine_resp.content, {})
+                        candidates = _refine_data.get("candidates", [])
+                        if candidates:
+                            best = max(candidates, key=lambda c: c.get("overall", 0))
+                            _eval_data["original_topic"] = config.research.topic
+                            _eval_data["refined_topic"] = best["topic"]
+                            _eval_data["candidates"] = candidates
+                            logger.warning(
+                                "IMP-35: Refined topic selected (score %s/10): %s",
+                                best.get("overall", "?"),
+                                best["topic"],
+                            )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("IMP-35: Sub-topic generation failed (non-blocking)")
                 else:
                     logger.info("IMP-35: Topic quality score %s/10", overall)
                 (stage_dir / "topic_evaluation.json").write_text(

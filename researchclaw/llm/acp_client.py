@@ -42,6 +42,7 @@ class ACPConfig:
     acpx_command: str = ""  # auto-detect if empty
     session_name: str = "researchclaw"
     timeout_sec: int = 1800  # per-prompt timeout
+    max_turns: int = 10
 
 
 def _find_acpx() -> str | None:
@@ -91,6 +92,7 @@ class ACPClient:
             acpx_command=getattr(acp, "acpx_command", ""),
             session_name=getattr(acp, "session_name", "researchclaw"),
             timeout_sec=getattr(acp, "timeout_sec", 1800),
+            max_turns=getattr(acp, "max_turns", 10),
         ))
 
     # ------------------------------------------------------------------
@@ -245,7 +247,7 @@ class ACPClient:
         )
         try:
             subprocess.run(
-                [acpx, "--approve-all", "--max-turns", "1",
+                [acpx, "--approve-all", "--max-turns", str(self.config.max_turns),
                  "--ttl", "0", "--cwd", self._abs_cwd(),
                  self.config.agent, "-s", self.config.session_name,
                  _warmup],
@@ -466,10 +468,11 @@ class ACPClient:
     def _send_prompt_cli(self, acpx: str, prompt: str) -> str:
         """Send prompt as a CLI argument (original path)."""
         cmd = [
-            acpx, "--approve-all", "--max-turns", "1",
+            acpx, "--approve-all", "--max-turns", str(self.config.max_turns),
             "--ttl", "0", "--cwd", self._abs_cwd(),
             self.config.agent, "-s", self.config.session_name, prompt,
         ]
+        logger.info("ACP CLI cmd max-turns=%s", self.config.max_turns)
         try:
             result = self._run_acp_with_heartbeat(cmd, label="ACP prompt (cli)")
         except subprocess.TimeoutExpired as exc:
@@ -479,18 +482,23 @@ class ACPClient:
 
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
-            raise RuntimeError(f"ACP prompt failed (exit {result.returncode}): {stderr}")
+            stdout = (result.stdout or "").strip()[-2000:]
+            raise RuntimeError(
+                f"ACP prompt failed (exit {result.returncode}): {stderr}"
+                + (f"\nstdout tail: {stdout}" if stdout else "")
+            )
 
         return self._extract_response(result.stdout)
 
     def _send_prompt_via_file(self, acpx: str, prompt: str) -> str:
         """Send prompt via stdin pipe (``-f -``) to avoid CLI arg limits."""
         cmd = [
-            acpx, "--approve-all", "--max-turns", "1",
+            acpx, "--approve-all", "--max-turns", str(self.config.max_turns),
             "--ttl", "0", "--cwd", self._abs_cwd(),
             self.config.agent, "-s", self.config.session_name,
             "-f", "-",
         ]
+        logger.info("ACP file cmd max-turns=%s", self.config.max_turns)
         try:
             result = self._run_acp_with_heartbeat(
                 cmd, label="ACP prompt (stdin)", input_data=prompt,
@@ -502,8 +510,10 @@ class ACPClient:
 
         if result.returncode != 0:
             stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()[-2000:]
             raise RuntimeError(
                 f"ACP prompt failed (exit {result.returncode}): {stderr}"
+                + (f"\nstdout tail: {stdout}" if stdout else "")
             )
 
         return self._extract_response(result.stdout)

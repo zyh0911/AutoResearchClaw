@@ -141,3 +141,4 @@ experiments/arc_bench/batch_logs/
 # README is tracked; any local checkout placed here stays local.
 external/agents/ColliderAgent/*
 !external/agents/ColliderAgent/README.md
+result/*

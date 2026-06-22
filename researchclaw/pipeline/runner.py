@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import importlib
 import logging
@@ -547,6 +548,21 @@ def execute_pipeline(
                 ))
             except Exception:
                 pass
+
+        # ── Topic auto-refinement: if PROBLEM_DECOMPOSE chose a specific sub-topic, patch config ──
+        if stage == Stage.PROBLEM_DECOMPOSE and result.status == StageStatus.DONE:
+            try:
+                _eval_path = run_dir / "stage-02" / "topic_evaluation.json"
+                if _eval_path.exists():
+                    _eval_json = json.loads(_eval_path.read_text(encoding="utf-8"))
+                    _refined = _eval_json.get("refined_topic")
+                    if _refined and _refined != config.research.topic:
+                        _new_research = dataclasses.replace(config.research, topic=_refined)
+                        config = dataclasses.replace(config, research=_new_research)
+                        logger.info("Topic refined for pipeline: %s", _refined)
+                        print(f"[{run_id}] Topic refined → {_refined}")
+            except Exception:
+                logger.debug("Topic refinement patch skipped (non-blocking)")
 
         # ── ExperimentSpec: generate after design, validate after analysis ──
         if stage == Stage.EXPERIMENT_DESIGN and result.status == StageStatus.DONE:
